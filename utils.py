@@ -9,6 +9,8 @@ from duckduckgo_search import DDGS
 
 from langsmith import traceable
 
+
+
 def get_config_value(value):
     """
     Helper function to handle both string and enum cases of configuration values
@@ -121,7 +123,10 @@ async def tavily_search_async(search_queries):
                     ]
                 }
     """
-    tavily_async_client = AsyncTavilyClient()
+    import streamlit as st
+    #tavily_async_client = AsyncTavilyClient()
+    tavily_async_client = AsyncTavilyClient(api_key=st.secrets["TAVILY_API_KEY"])
+
     search_tasks = []
     for query in search_queries:
             search_tasks.append(
