@@ -282,6 +282,127 @@ async def duckduckgo_search(search_queries):
     
     return search_docs
 
+@traceable
+async def github_search(search_queries: list[str]):
+    """Perform searches using GitHub API
+    
+    Args:
+        search_queries (List[str]): List of search queries to process
+        
+    Returns:
+        List[dict]: List of search results in consistent format with other search APIs
+    """
+    # Get GitHub token from environment
+    github_token = os.environ.get("GITHUB_API_TOKEN")
+    
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    async def process_single_query(query):
+        results = []
+        
+        try:
+            # Search repositories
+            repo_url = "https://api.github.com/search/repositories"
+            repo_params = {"q": query, "per_page": 3, "sort": "stars", "order": "desc"}
+            
+            # Search code - we'll scope this to popular AI/ML orgs by default
+            code_url = "https://api.github.com/search/code"
+            code_query = f"{query} org:langchain-ai OR org:openai OR org:microsoft OR org:google"
+            code_params = {"q": code_query, "per_page": 3}
+            
+            # Search issues
+            issues_url = "https://api.github.com/search/issues"
+            issues_params = {"q": query, "per_page": 3, "sort": "updated", "order": "desc"}
+            
+            # Execute all searches concurrently
+            loop = asyncio.get_event_loop()
+            repo_resp, code_resp, issues_resp = await asyncio.gather(
+                loop.run_in_executor(None, lambda: requests.get(repo_url, headers=headers, params=repo_params)),
+                loop.run_in_executor(None, lambda: requests.get(code_url, headers=headers, params=code_params)),
+                loop.run_in_executor(None, lambda: requests.get(issues_url, headers=headers, params=issues_params))
+            )
+            
+            # Check rate limits
+            def check_rate_limit(resp):
+                if resp.status_code == 403 and "rate limit exceeded" in resp.text.lower():
+                    reset_time = int(resp.headers.get("X-RateLimit-Reset", 0))
+                    wait_time = max(0, reset_time - time.time())
+                    raise Exception(f"GitHub API rate limit exceeded. Try again in {wait_time:.0f} seconds.")
+                resp.raise_for_status()
+                return resp
+            
+            # Process repository results
+            try:
+                repo_data = check_rate_limit(repo_resp).json()
+                for item in repo_data.get("items", [])[:3]:
+                    results.append({
+                        "title": f"Repository: {item.get('full_name', '')}",
+                        "url": item.get("html_url", ""),
+                        "content": item.get("description", "") or "No description",
+                        "raw_content": f"Stars: {item.get('stargazers_count', 0)}\nLanguage: {item.get('language', 'Unknown')}",
+                        "score": min(1.0, item.get("stargazers_count", 0)) / 1000
+                    })
+            except Exception:
+                pass
+            
+            # Process code results
+            try:
+                code_data = check_rate_limit(code_resp).json()
+                for item in code_data.get("items", [])[:3]:
+                    results.append({
+                        "title": f"Code: {item.get('name', '')}",
+                        "url": item.get("html_url", ""),
+                        "content": f"Path: {item.get('path', '')}",
+                        "raw_content": f"Repository: {item.get('repository', {}).get('full_name', '')}",
+                        "score": 0.7
+                    })
+            except Exception:
+                pass
+            
+            # Process issue results
+            try:
+                issues_data = check_rate_limit(issues_resp).json()
+                for item in issues_data.get("items", [])[:3]:
+                    body = (item.get("body", "") or "No description")[:500]
+                    results.append({
+                        "title": f"Issue: {item.get('title', '')}",
+                        "url": item.get("html_url", ""),
+                        "content": body,
+                        "raw_content": f"State: {item.get('state', 'open')}\nComments: {item.get('comments', 0)}",
+                        "score": 0.5
+                    })
+            except Exception:
+                pass
+            
+        except Exception:
+            pass
+            
+        return {
+            "query": query,
+            "follow_up_questions": None,
+            "answer": None,
+            "images": [],
+            "results": results[:5]
+        }
+    
+    # Execute all queries with concurrency limit
+    semaphore = asyncio.Semaphore(2)
+    async def limited_search(query):
+        async with semaphore:
+            return await process_single_query(query)
+    
+    tasks = [limited_search(query) for query in search_queries]
+    search_docs = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Filter out any exceptions
+    return [doc for doc in search_docs if not isinstance(doc, Exception)]
+
 async def select_and_execute_search(search_api: str, query_list: list[str], params_to_pass: dict) -> str:
     """Select and execute the appropriate search API.
     
@@ -308,5 +429,17 @@ async def select_and_execute_search(search_api: str, query_list: list[str], para
     elif search_api == "googlesearch":
         search_results = await google_search_async(query_list, **params_to_pass)
         return deduplicate_and_format_sources(search_results, max_tokens_per_source=4000)
+    elif search_api == "github":
+        search_results = await github_search(query_list)
+        return deduplicate_and_format_sources(search_results, max_tokens_per_source=4000)
+    elif search_api == "hybrid":
+        # Run both web and GitHub searches
+        web_results = await tavily_search_async(query_list, **params_to_pass)
+        github_results = await github_search(query_list)
+        
+        # Combine results
+        combined_results = web_results + github_results
+        
+        return deduplicate_and_format_sources(combined_results, max_tokens_per_source=4000)
     else:
         raise ValueError(f"Unsupported search API: {search_api}")
