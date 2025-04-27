@@ -24,7 +24,7 @@ from langchain_core.output_parsers import StrOutputParser
 ollama_model = ChatOllama(model="llama3:8b")
 
 st.set_page_config(page_title="Deep Research with LangGraph", layout="wide")
-st.title("Deep Research System")
+st.title("Deep Research Report Generator")
 
 # initialize session state variables
 defaults = {
@@ -37,7 +37,7 @@ defaults = {
     "section_queries": [],
     "search_results": "",
     "written_section": "",
-    "written_sections": []  # <-- added to support multiple sections
+    "written_sections": []  # added to support multiple sections
 }
 for key, value in defaults.items():
     if key not in st.session_state:
@@ -47,11 +47,38 @@ for key, value in defaults.items():
 st.sidebar.title("Navigation")
 if st.sidebar.button("Next Step"): # going to next step down the line
     st.session_state.step += 1
-if st.sidebar.button("Reset"): ## reset every thing in the field
+if st.sidebar.button("Reset All"): ## reset every thing in the field
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     st.session_state.step = 1
     st.rerun()
+
+# show existing section names
+if st.session_state.written_sections:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Sections Created:")
+    for idx, section in enumerate(st.session_state.written_sections, 1):
+        st.sidebar.markdown(f"- Section {idx}")
+
+    if st.sidebar.button("Clear Last Section"):
+        if st.session_state.written_sections:
+            st.session_state.written_sections.pop()
+
+
+st.markdown("""
+
+Welcome! This app will guide you through **five easy steps** to create a full research report:
+
+1. **Define Topic & Structure** – Set what your report is about and outline sections.
+2. **Generate Queries** – Create search queries for a section.
+3. **Web Search** – Fetch research material from real websites.
+4. **Write Section** – AI writes a polished section based on your research.
+5. **Export Report** – Download your completed markdown file!
+
+**Tip**: Save one section at a time, then continue adding more sections before final export.
+
+---
+""")
 
 # choosing topic and structure
 if st.session_state.step >= 1:
@@ -143,13 +170,14 @@ if st.session_state.step >= 4:
             | ollama_model
             | StrOutputParser()
         )
-
+        
         # Debug Info
         # st.markdown("**DEBUG INFO**")
         # st.write("Current Topic:", st.session_state.topic)
         # st.write("Current Section Topic:", st.session_state.section_topic)
         # st.write("Current Section Name:", st.session_state.section_name)
         # st.write("Search Results Preview:", st.session_state.search_results[:500])
+
 
         with st.spinner("Writing section..."):
             section_text = chain.invoke({
@@ -181,4 +209,8 @@ if st.session_state.step >= 5:
             numbered_sections.append(numbered_section)
 
         final_md = f"# {st.session_state.topic}\n\n" + "\n\n".join(numbered_sections)
-        st.download_button("📄 Download Markdown", final_md, file_name="deep_research.md")
+
+        st.subheader("Full Report Preview")
+        st.text_area("Full Report Markdown", final_md, height=600)
+
+        st.download_button("Download Markdown", final_md, file_name="deep_research.md")
