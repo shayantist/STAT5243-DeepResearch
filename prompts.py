@@ -75,6 +75,8 @@ Before submitting, review your structure to ensure it has no redundant sections 
 <Feedback>
 Here is feedback on the report structure from review (if any):
 {feedback}
+
+If no feedback is provided, or the reviewer chose to proceed despite low rating, assume that no substantial feedback is given and you should continue with the original plan unless otherwise necessary.
 </Feedback>
 
 <Format>
