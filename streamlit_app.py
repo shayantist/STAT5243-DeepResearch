@@ -1,10 +1,8 @@
 import streamlit as st
 import asyncio
 import os
+import re
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-
-tavily_api_key = st.secrets["TAVILY_API_KEY"]
-
 from utils import tavily_search_async, deduplicate_and_format_sources
 from prompts import (
     report_planner_instructions,
@@ -16,26 +14,36 @@ from langchain_ollama import ChatOllama
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# ----------------------
+# Utility Function
+# ----------------------
+def parse_report_plan_advanced(plan_text):
+    """
+    Robustly parses section titles from a numbered report plan.
+    Accepts formats like:
+    - 1. Title
+    - **1. Title**
+    - 1. **Title**
+    """
+    sections = []
+
+    # Match lines starting with a number + dot, optionally bolded
+    pattern = r"(?:\*\*)?\s*\d+\.\s+(.*?)\s*(?:\*\*)?$"
+
+    matches = re.findall(pattern, plan_text, flags=re.MULTILINE)
+    if matches:
+        sections = [m.strip() for m in matches]
+
+    return sections
+
+
+# ----------------------
+# Streamlit Config
+# ----------------------
 st.set_page_config(page_title="Deep Research with LangGraph", layout="wide")
 
-#######
-#######
-# modified models
-# https://ollama.com/search
-#######
-#######
+AVAILABLE_MODELS = ["llama3:8b", "qwen2:7b", "nous-hermes2", "yi:6b"]
 
-
-# Define available models
-AVAILABLE_MODELS = {
-    "llama3": "llama3:8b",
-    "mistral": "mistral",
-    "qwen2": "qwen2:12b",
-    "gemma": "gemma"
-}
-
-
-# initialize session state variables
 defaults = {
     "step": 1,
     "topic": "",
@@ -43,360 +51,257 @@ defaults = {
     "section_topic": "",
     "section_name": "",
     "report_plan": None,
+    "parsed_sections": [],
+    "editable_sections": [],
     "section_queries": [],
-    "search_results": "",
-    "written_section": "",
-    "written_sections": [],  # added to support multiple sections
-    "feedback_text": "", # default blank feedback
-    "feedback_rating": 3,
+    "search_results": [],
+    "written_sections": [],
+    "feedback_text": "",
     "feedback_submitted": False,
 }
-
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
-# sidebar navigation #to save info to look back
-# Sidebar model selection
-st.sidebar.title("Model Selection")
-selected_model = st.sidebar.selectbox(
-    "Choose your LLM Model",
-    options=["llama3:8b", "qwen2:7b", "nous-hermes2", "yi:6b"],
-    index=0  # choose the first one as default（like llama3:8b）
-)
-
-# initialize model based on selection
+# ----------------------
+# Sidebar
+# ----------------------
+st.sidebar.title("Settings")
+selected_model = st.sidebar.selectbox("Choose Model", AVAILABLE_MODELS)
 ollama_model = ChatOllama(model=selected_model)
 
-
-# Initialize the sentiment analyzer
-analyzer = SentimentIntensityAnalyzer()
-
-# set sidebar  
 st.sidebar.markdown("---")
-
-# sidebar navigation #to save info to look back
-st.sidebar.title("Navigation")
-if st.sidebar.button("Next Step"): # going to next step down the line
+if st.sidebar.button("Next Step"):
     st.session_state.step += 1
-if st.sidebar.button("Reset All"): ## reset every thing in the field
+if st.sidebar.button("Reset All"):
     for key in list(st.session_state.keys()):
         del st.session_state[key]
-    st.session_state.step = 1
+    st.session_state.update(defaults)
     st.rerun()
 
-# show existing section names
-if st.session_state.written_sections:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Sections Created:")
-    for idx, section in enumerate(st.session_state.written_sections, 1):
-        st.sidebar.markdown(f"- Section {idx}")
-
-    if st.sidebar.button("Clear Last Section"):
-        if st.session_state.written_sections:
-            st.session_state.written_sections.pop()
-
-# title
+# ----------------------
+# App Title
+# ----------------------
 st.title("Deep Research Report Generator")
 
-# Define model explanations
-MODEL_DESCRIPTIONS = {
-    "llama3:8b": "🦙 Llama3-8B: Strong in logical writing and structured reasoning.",
-    "qwen2:7b": "🧠 Qwen2-7B: Excellent at fluent report generation and analysis.",
-    "nous-hermes2": "📝 Nous Hermes2: Optimized for clear summarization and coherent writing.",
-    "yi:6b": "🚀 Yi-6B: Lightweight and fast, great for short and fluent reports."
-}
-
-# Get the description for the selected model
-model_description = MODEL_DESCRIPTIONS.get(selected_model, "🚀 Using selected model for report generation.")
-
-# After st.title(...) but before the main content, show this!
-st.markdown(f"**Model Selected:** {model_description}")
-
-
 st.markdown("""
+Follow **5 steps** to build your custom research report:
 
-Welcome! This app will guide you through **five easy steps** to create a full research report:
-
-1. **Define Topic & Structure** – Set what your report is about and outline sections.
-2. **Generate Queries** – Create search queries for a section.
-3. **Web Search** – Fetch research material from real websites.
-4. **Write Section** – AI writes a polished section based on your research.
-5. **Export Report** – Download your completed markdown file!
-
-**Tip**: Save one section at a time, then continue adding more sections before final export.
+1. **Define Topic & Structure**
+2. **Parse & Edit Section Titles**
+3. **Search & Fetch Materials**
+4. **Write Sections**
+5. **Preview & Export**
 
 ---
 """)
 
-# choosing topic and structure
+# ----------------------
+# Step 1: Define Topic and Report Plan
+# ----------------------
 if st.session_state.step >= 1:
     st.header("Step 1: Define Topic and Structure")
 
-    st.text_input("Enter your research topic:", key="topic")
-    st.text_area("Specify the report structure:", key="structure", height=200)
+    st.text_input("Research Topic:", key="topic")
+    st.text_area("Report Structure:", key="structure", height=150)
 
     if st.button("Generate Report Plan"):
         planner_prompt = PromptTemplate.from_template(report_planner_instructions)
         chain = planner_prompt | ollama_model | StrOutputParser()
-        with st.spinner("Generating plan..."):
+
+        with st.spinner("Generating report plan..."):
             st.session_state.report_plan = chain.invoke({
                 "topic": st.session_state.topic,
                 "report_organization": st.session_state.structure,
                 "context": "",
-                "feedback": ""
+                "feedback": "",
             })
-        # clear feedback space
-        st.session_state.feedback_text = ""
-        st.session_state.feedback_rating = 3
-        st.session_state.feedback_submitted = False
-        st.rerun()
 
-if st.session_state.report_plan:
-    st.subheader("Report Plan")
-    st.code(st.session_state.report_plan)
+    if st.session_state.report_plan:
+        st.subheader("Generated Report Plan")
+        st.code(st.session_state.report_plan)
 
-# Step 1.5: Provide Feedback on Report Plan
-# Check at the beginning of the page. If there are marks, clear feedback_text
-if st.session_state.get("clear_feedback_flag"):
-    st.session_state.feedback_text = ""
-    st.session_state.feedback_rating = 3
-    #st.session_state.feedback_submitted = False
-    del st.session_state.clear_feedback_flag  # clear this flag
-
-if st.session_state.get("proceed_anyway_clicked", False):
-    st.success("A new Report Plan has been generated based on your feedback! Proceed to Step 2 when ready.")
-    st.session_state.feedback_submitted = True
-    del st.session_state["proceed_anyway_clicked"]
-    st.stop()
-
-
-if st.session_state.get("show_success"):
-    st.success("A new Report Plan has been generated based on your feedback! Proceed to Step 2 when ready.")
-    #st.stop()
-    #st.session_state.feedback_submitted = True
-    del st.session_state["show_success"]
-
-
-
-if st.session_state.step >= 1 and st.session_state.report_plan:
-
-    st.markdown("## Step 1.5: Provide Feedback on Report Plan")
-
-    if st.session_state.get("show_success"):
-        st.success("A new Report Plan has been generated based on your feedback! Proceed to Step 2 when ready.")
-        #st.session_state.success_shown_once = True
-        st.session_state.feedback_submitted = True 
-        #del st.session_state["show_success"]
-        #st.stop() 
-
-    if "feedback_submitted" not in st.session_state:
-        st.session_state.feedback_submitted = False
-
-    if not st.session_state.feedback_submitted:
-        st.caption("""
-        (Optional) If you are satisfied with the plan, you can skip feedback and proceed to Step 2. 
-        If you think improvements are needed, please describe them below.
-        A new report plan will be generated based on your feedback.
-        """)
-
-        st.text_area(
-            "Your feedback (optional):",
-            key="feedback_text",
-            height=150
-        )
-
-        st.slider(
-            "Rate the Report Plan (1 = Very Poor, 5 = Excellent):",
-            1, 5,
-            key="feedback_rating"
-        )
+        st.markdown("## Feedback")
+        st.text_area("Suggest improvements (optional):", key="feedback_text", height=100)
 
         if st.button("Submit Feedback"):
-            feedback_text = st.session_state.feedback_text
-            feedback_rating = st.session_state.feedback_rating
+            planner_prompt = PromptTemplate.from_template(report_planner_instructions)
+            chain = planner_prompt | ollama_model | StrOutputParser()
 
+            with st.spinner("Updating report plan..."):
+                st.session_state.report_plan = chain.invoke({
+                    "topic": st.session_state.topic,
+                    "report_organization": st.session_state.structure,
+                    "context": "",
+                    "feedback": st.session_state.feedback_text,
+                })
+            st.success("Updated! You can give more feedback or proceed.")
+            st.rerun()
 
-            sentiment_score = analyzer.polarity_scores(feedback_text)
-            compound_score = sentiment_score['compound']
-
-            if feedback_text.strip() == "" and feedback_rating >= 3:
-                # If the feedback is empty but the score is good, it will be directly judged as successful
-                st.session_state.feedback_submitted = True
-                st.session_state.show_success = True
-                st.rerun()
-
-            # First, check for conflicts where the text is positive but given a low score
-            elif compound_score >= 0.2 and feedback_rating <= 2:
-                with st.expander("Your feedback seems positive but the rating is low. Please confirm:"):
-                    st.warning("""
-                    It looks like you wrote positive feedback, but gave a low rating.
-
-                    - If you actually liked the plan, please consider adjusting your rating to 4 or 5.
-                    - If you are dissatisfied, please provide more specific feedback.
-                    - You can also proceed with the current rating if you prefer.
-                    """)
-                    revise_feedback = st.button("Revise My Feedback")
-                    proceed_anyway = st.button("Proceed Anyway")
-                    #proceed_anyway = st.button("Proceed Anyway", key="proceed_anyway_in_expander")
-
-
-                    if revise_feedback:
-                        st.session_state.feedback_text = ""
-                        st.session_state.feedback_rating = 3
-                        st.session_state.feedback_submitted = False  
-                        st.rerun() 
-                        st.stop()
-                
-                    if proceed_anyway:
-                        st.session_state.feedback_submitted = True
-                        st.session_state.show_success = True
-                        st.rerun()
-
-                    if not proceed_anyway:
-                        st.stop()
-           
-            elif compound_score >= 0.2 and feedback_rating >= 3:
-                # Here is Situation 2: Good feedback + good score
-                st.session_state.feedback_submitted = True
-                st.session_state.show_success = True  
-                st.rerun()
-            
-            else:
-                # If the text is negative or has a low rating, it will all be regenerated
-                if compound_score <= -0.4 or feedback_rating <= 2:
-                    planner_prompt = PromptTemplate.from_template(report_planner_instructions)
-
-                    chain = planner_prompt | ollama_model | StrOutputParser()
-
-                    with st.spinner("Regenerating Report Plan based on your feedback..."):
-                        st.session_state.report_plan = chain.invoke({
-                            "topic": st.session_state.topic,
-                            "report_organization": st.session_state.structure,
-                            "context": "",
-                            "feedback": feedback_text
-                        })
-                    # after regeneration，clear feedback
-                    st.session_state.clear_feedback_flag = True  
-                    st.success("A new Report Plan has been generated based on your feedback! Proceed to Step 2 when ready.")
-                    st.rerun()
-    else:
-        # The feedback has been submitted and a success prompt is displayed
-        st.success("✅ Feedback submitted! You can now click 'Next Step' on the sidebar ➡️")
-            
-
-
-
-# query generation
+# ----------------------
+# Step 2: Parse and Edit Sections
+# ----------------------
 if st.session_state.step >= 2:
-    st.header("Step 2: Generate Queries for a Section")
+    st.header("Step 2: Parse and Edit Section Titles")
 
-    st.session_state.section_topic = st.text_input("Choose a section topic:", value=st.session_state.section_topic)
+    if st.session_state.report_plan and st.button("Parse Sections from Report Plan"):
+        sections = parse_report_plan_advanced(st.session_state.report_plan)
+        if sections:
+            st.session_state.parsed_sections = sections
+            st.session_state.editable_sections = sections.copy()
+            st.success(f"✅ Parsed {len(sections)} section(s). You can now edit them.")
+        else:
+            st.warning("⚠️ No sections found. Please check the format of the Report Plan.")
 
-    num_queries = st.slider("Number of queries", 1, 10, 3)
-    if st.button("Generate Queries"):
-        query_prompt = PromptTemplate.from_template(report_planner_query_writer_instructions)
-        chain = query_prompt | ollama_model | StrOutputParser()
-        with st.spinner("Generating queries..."):
-            output = chain.invoke({
-                "topic": st.session_state.topic,
-                "report_organization": st.session_state.structure,
-                "num_queries": num_queries
-            })
-            queries = [line.strip(" -•1234567890.").strip() for line in output.split("\n") if line.strip()]
-            st.session_state.section_queries = queries
-    if st.session_state.section_queries:
-        st.subheader("Generated Queries")
-        for q in st.session_state.section_queries:
-            st.markdown(f"- {q}")
+    if st.session_state.editable_sections:
+        st.subheader("Editable Section Titles")
 
-# Tavily Web Search
+        updated_sections = []
+        for idx, title in enumerate(st.session_state.editable_sections):
+            new_title = st.text_input(f"Section {idx+1} Title", value=title, key=f"section_edit_{idx}")
+            updated_sections.append(new_title.strip())
+
+        if st.button("Save Updated Section Titles"):
+            st.session_state.section_queries = updated_sections
+            st.success("✅ Section titles saved! You can now proceed to Search.")
+
+# ----------------------
+# Step 3: Search per Section
+# ----------------------
 if st.session_state.step >= 3:
-    st.header("Step 3: Perform Web Search")
-    if st.button("Run Tavily Search"):
-        async def search_and_show():
-            # clear previous search results first
-            st.session_state.search_results = ""
+    st.header("Step 3: Search Web Resources for Each Section")
 
-            results = await tavily_search_async(st.session_state.section_queries)
-            formatted = deduplicate_and_format_sources(results, max_tokens_per_source=2000)
-            st.session_state.search_results = formatted
-        asyncio.run(search_and_show())
+    if st.button("Run Parallel Tavily Search"):
+        async def search_all_queries():
+            search_tasks = []
+            searchable_indices = []
+            filtered_queries = []
+
+            # Identify which queries to search (exclude Intro/Conclusion)
+            for idx, q in enumerate(st.session_state.section_queries):
+                q_lower = q.strip().lower()
+                if q_lower in {"introduction", "conclusion", "summary", "closing remarks", "references"}:
+                    st.session_state.search_results.append(f"(Search skipped for section: {q})")
+                else:
+                    search_tasks.append(tavily_search_async([q]))
+                    searchable_indices.append(idx)
+                    filtered_queries.append(q)
+
+            # Run searches in parallel
+            results = await asyncio.gather(*search_tasks)
+            combined = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in results]
+
+            # Inject results back into the original order
+            for idx, content in zip(searchable_indices, combined):
+                st.session_state.search_results[idx] = content
+
+        # Clear previous results and reinitialize the list
+        st.session_state.search_results = [""] * len(st.session_state.section_queries)
+        asyncio.run(search_all_queries())
+
     if st.session_state.search_results:
-        st.text_area("Search Results", st.session_state.search_results, height=500)
+        st.subheader("Fetched Search Results")
+        for idx, result in enumerate(st.session_state.search_results, 1):
+            st.text_area(f"Search Result {idx}", result, height=300)
 
-# write the section
+# ----------------------
+# Step 4: Write Sections
+# ----------------------
 if st.session_state.step >= 4:
-    st.header("Step 4: Write the Report Section")
+    st.header("Step 4: Write Report Sections")
 
-    st.session_state.section_name = st.text_input("Section Name (e.g. Introduction, Comparison):", value=st.session_state.section_name)
+    if st.button("Generate All Sections"):
+        st.session_state.written_sections = []
 
-    if st.button("Generate Section"):
-        # create a writer prompt
-        writer_prompt = PromptTemplate.from_template(section_writer_instructions)
-        fill_inputs = PromptTemplate.from_template(section_writer_inputs)
-
-        filled = fill_inputs.format(
-            topic=st.session_state.topic,
-            section_name=st.session_state.section_name,
-            section_topic=st.session_state.section_topic,
-            section_content="",
-            context=st.session_state.search_results
+        # Main writer prompt (uses context from search)
+        full_writer_chain = (
+            PromptTemplate.from_template(
+                "System Instruction:\nYou must start fresh.\n\n" + section_writer_instructions
+            ) | ollama_model | StrOutputParser()
         )
 
-        # inject a system message to tell model to reset
-        system_message = (
-            "You must start a brand-new generation. "
-            "Forget all previous conversations. "
-            "ONLY use the provided topic, section, and search results below."
+        # Fallback writer for intro/skipped sections
+        fallback_prompt = PromptTemplate.from_template(
+            """Write a concise, self-contained section titled "{section_topic}" for a research report on "{topic}".
+Avoid relying on external references. Focus on providing context, clarity, and informative content suitable for an introductory or standalone section."""
         )
+        fallback_writer_chain = fallback_prompt | ollama_model | StrOutputParser()
 
-        chain = (
-            PromptTemplate.from_template(f"System Instruction:\n{system_message}\n\n" + section_writer_instructions)
-            | ollama_model
-            | StrOutputParser()
+        # Dedicated conclusion generator (summarize prior content)
+        conclusion_prompt = PromptTemplate.from_template(
+            """Write a conclusion for a research report on "{topic}".
+Summarize the key insights from the following sections:
+
+{written_content}
+
+End with a thoughtful remark on the significance of the topic and possible directions for further exploration."""
         )
-        
-        # Debug Info
-        # st.markdown("**DEBUG INFO**")
-        # st.write("Current Topic:", st.session_state.topic)
-        # st.write("Current Section Topic:", st.session_state.section_topic)
-        # st.write("Current Section Name:", st.session_state.section_name)
-        # st.write("Search Results Preview:", st.session_state.search_results[:500])
+        conclusion_chain = conclusion_prompt | ollama_model | StrOutputParser()
 
+        progress = st.progress(0)
 
-        with st.spinner("Writing section..."):
-            section_text = chain.invoke({
-                "topic": st.session_state.topic,
-                "section_name": st.session_state.section_name,
-                "section_topic": st.session_state.section_topic,
-                "section_content": "",
-                "context": st.session_state.search_results,
-                "SECTION_WORD_LIMIT": 500
-            })
+        for idx, (query, search_content) in enumerate(zip(st.session_state.section_queries, st.session_state.search_results)):
+            section_title = query.strip()
+            section_lower = section_title.lower()
+            is_skipped = search_content.startswith("(Search skipped for section:")
+            is_conclusion = section_lower in {"conclusion", "summary", "closing remarks"}
 
-            st.session_state.written_section = section_text
-            st.session_state.written_sections.append(section_text)
+            with st.spinner(f"Writing Section {idx+1}..."):
+                if is_conclusion:
+                    # Use summary of previous written sections
+                    previous_texts = "\n\n".join(st.session_state.written_sections)
+                    section_text = conclusion_chain.invoke({
+                        "topic": st.session_state.topic,
+                        "written_content": previous_texts,
+                    })
+                    section_text = f"## Section {idx+1}: {section_title}\n\n{section_text}"
+                    st.session_state.written_sections.append(section_text)
+                elif is_skipped:
+                    # Use fallback writer for intro-like sections
+                    section_text = fallback_writer_chain.invoke({
+                        "topic": st.session_state.topic,
+                        "section_topic": section_title,
+                    })
+                    section_text = f"## Section {idx+1}: {section_title}\n\n{section_text}"
+                    st.session_state.written_sections.append(section_text)
+                elif search_content.strip():
+                    # Normal case with context
+                    section_text = full_writer_chain.invoke({
+                        "topic": st.session_state.topic,
+                        "section_name": f"Section {idx+1}: {section_title}",
+                        "section_topic": section_title,
+                        "section_content": "",
+                        "context": search_content,
+                        "SECTION_WORD_LIMIT": 500,
+                    })
+                    st.session_state.written_sections.append(section_text)
+                else:
+                    st.session_state.written_sections.append(f"## Section {idx+1}: {section_title}\n\n(No sufficient information found.)")
+            
+            progress.progress((idx + 1) / len(st.session_state.section_queries))
 
     if st.session_state.written_sections:
-        st.header("Generated Sections So Far")
+        st.subheader("Generated Sections")
         for idx, section in enumerate(st.session_state.written_sections, 1):
-            st.subheader(f"Section {idx}")
+            st.markdown(f"### Section {idx}")
             st.markdown(section)
 
-# export report
+
+# ----------------------
+# Step 5: Export Full Report
+# ----------------------
 if st.session_state.step >= 5:
     st.header("Step 5: Export Full Report")
+
     if st.session_state.written_sections:
-        # add automatic numbering for sections
         numbered_sections = []
         for idx, section in enumerate(st.session_state.written_sections, 1):
-            numbered_section = section.replace("## ", f"## {idx}. ", 1)
-            numbered_sections.append(numbered_section)
+            numbered = section.replace("## ", f"## {idx}. ", 1)
+            numbered_sections.append(numbered)
 
         final_md = f"# {st.session_state.topic}\n\n" + "\n\n".join(numbered_sections)
 
-        st.subheader("Full Report Preview")
-        st.text_area("Full Report Markdown", final_md, height=600)
+        st.subheader("Final Report Preview")
+        st.text_area("Markdown Output", final_md, height=400)
 
-        st.download_button("Download Markdown", final_md, file_name="deep_research.md")
+        st.download_button("📄 Download Report", final_md, file_name="deep_research.md")
