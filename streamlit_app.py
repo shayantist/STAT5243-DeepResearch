@@ -27,8 +27,6 @@ def parse_report_plan_advanced(plan_text):
     return [m.strip() for m in matches]
 
 
-
-
 # ----------------------
 # Streamlit Config
 # ----------------------

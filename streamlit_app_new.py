@@ -19,22 +19,12 @@ from langchain_core.output_parsers import StrOutputParser
 # ----------------------
 def parse_report_plan_advanced(plan_text):
     """
-    Robustly parses section titles from a numbered report plan.
-    Accepts formats like:
-    - 1. Title
-    - **1. Title**
-    - 1. **Title**
+    Extracts section titles from a structured report plan by finding lines 
+    starting with 'Name:'. This version is robust to minor formatting variations.
     """
-    sections = []
-
-    # Match lines starting with a number + dot, optionally bolded
-    pattern = r"(?:\*\*)?\s*\d+\.\s+(.*?)\s*(?:\*\*)?$"
-
-    matches = re.findall(pattern, plan_text, flags=re.MULTILINE)
-    if matches:
-        sections = [m.strip() for m in matches]
-
-    return sections
+    pattern = r"[Nn]ame:\s*(.+)"
+    matches = re.findall(pattern, plan_text)
+    return [m.strip() for m in matches]
 
 
 # ----------------------
@@ -230,6 +220,7 @@ if st.session_state.step >= 2:
 # ----------------------
 # Step 3: Search per Section
 # ----------------------
+
 if st.session_state.step >= 3:
     st.header("Step 3: Search Web Resources for Each Section")
     
@@ -240,13 +231,13 @@ if st.session_state.step >= 3:
     - Processes and formats the search results for content generation
     """)
 
+    # Actual search button
     if st.button("Run Parallel Tavily Search"):
         async def search_all_queries():
             search_tasks = []
             searchable_indices = []
             filtered_queries = []
 
-            # Identify which queries to search (exclude Intro/Conclusion)
             for idx, q in enumerate(st.session_state.section_queries):
                 q_lower = q.strip().lower()
                 if q_lower in {"introduction", "conclusion", "summary", "closing remarks", "references"}:
@@ -256,22 +247,38 @@ if st.session_state.step >= 3:
                     searchable_indices.append(idx)
                     filtered_queries.append(q)
 
-            # Run searches in parallel
             results = await asyncio.gather(*search_tasks)
             combined = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in results]
 
-            # Inject results back into the original order
             for idx, content in zip(searchable_indices, combined):
                 st.session_state.search_results[idx] = content
 
-        # Clear previous results and reinitialize the list
         st.session_state.search_results = [""] * len(st.session_state.section_queries)
         asyncio.run(search_all_queries())
 
+    ######Insert mock-up buttons HERE:
+    with st.container():
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Google Search", key="google_mock"):
+                st.info("Google Search feature is not yet implemented.")
+        with col2:
+            if st.button("GitHub Search", key="github_mock"):
+                st.info("GitHub Search feature is not yet implemented.")
+
+    # Optional: mock output previews
+    if st.session_state.get("google_mock"):
+        st.text_area("Google Search Preview (Mock)", value="Mock result from Google...", height=150)
+
+    if st.session_state.get("github_mock"):
+        st.text_area("GitHub Search Preview (Mock)", value="Mock result from GitHub...", height=150)
+
+    # Existing section
     if st.session_state.search_results:
         st.subheader("Fetched Search Results")
         for idx, result in enumerate(st.session_state.search_results, 1):
             st.text_area(f"Search Result {idx}", result, height=300)
+
 
 # ----------------------
 # Step 4: Write Sections
