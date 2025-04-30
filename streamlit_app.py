@@ -15,26 +15,18 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # ----------------------
-# Utility Function
+# Helper Function
 # ----------------------
 def parse_report_plan_advanced(plan_text):
     """
-    Robustly parses section titles from a numbered report plan.
-    Accepts formats like:
-    - 1. Title
-    - **1. Title**
-    - 1. **Title**
+    Extracts section titles from a structured report plan by finding lines 
+    starting with 'Name:'. This version is robust to minor formatting variations.
     """
-    sections = []
+    pattern = r"[Nn]ame:\s*(.+)"
+    matches = re.findall(pattern, plan_text)
+    return [m.strip() for m in matches]
 
-    # Match lines starting with a number + dot, optionally bolded
-    pattern = r"(?:\*\*)?\s*\d+\.\s+(.*?)\s*(?:\*\*)?$"
 
-    matches = re.findall(pattern, plan_text, flags=re.MULTILINE)
-    if matches:
-        sections = [m.strip() for m in matches]
-
-    return sections
 
 
 # ----------------------
