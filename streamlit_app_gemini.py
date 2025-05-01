@@ -85,7 +85,7 @@ def load_structured_plan():
 # ----------------------
 # Streamlit Config
 # ----------------------
-st.set_page_config(page_title="Deep Research with LangGraph", layout="wide")
+st.set_page_config(page_title="Deep Research Report Generator", layout="wide")
 
 AVAILABLE_MODELS = ["llama3:8b (ollama)", "qwen2:7b (ollama)", "nous-hermes2 (ollama)", "yi:6b (ollama)", "gemini-2.0-flash (google)"]
 
@@ -107,6 +107,10 @@ defaults = {
 for key, value in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+###selection
+if "selected_sources" not in st.session_state:
+    st.session_state.selected_sources = {}
 
 # ----------------------
 # Sidebar
@@ -381,8 +385,24 @@ if st.session_state.step >= 3:
 
     if st.session_state.search_results:
         st.subheader("Fetched Search Results")
-        for idx, result in enumerate(st.session_state.search_results, 1):
-            st.text_area(f"Search Result {idx}", result, height=300)
+
+        for idx, (section_title, result_text) in enumerate(zip(st.session_state.section_queries, st.session_state.search_results)):
+            st.markdown(f"### 🔍 Search Results for: **{section_title}**")
+
+            section_key = f"section_{idx}_sources"
+            sources = result_text.split("=" * 80)
+            st.session_state.selected_sources[section_key] = []
+
+            for s_idx, source_block in enumerate(sources):
+                source_block = source_block.strip()
+                if not source_block:
+                    continue
+
+                with st.expander(f"Source {s_idx+1}", expanded=False):
+                    st.markdown(source_block.replace("===", "").strip())
+                    if st.checkbox("✅ Use this source", key=f"select_{section_key}_{s_idx}"):
+                        st.session_state.selected_sources[section_key].append(source_block.strip())
+
 
 # ----------------------
 # Step 4: Write Sections
@@ -420,10 +440,14 @@ End with a thoughtful remark on the significance of the topic and possible direc
 
         progress = st.progress(0)
 
-        for idx, (query, search_content) in enumerate(zip(st.session_state.section_queries, st.session_state.search_results)):
+        for idx, query in enumerate(st.session_state.section_queries):
             section_title = query.strip()
             section_lower = section_title.lower()
-            is_skipped = search_content.startswith("(Search skipped for section:")
+            section_key = f"section_{idx}_sources"
+            selected_blocks = st.session_state.selected_sources.get(section_key, [])
+            context = "\n\n".join(selected_blocks) if selected_blocks else st.session_state.search_results[idx]
+
+            is_skipped = context.startswith("(Search skipped for section:")
             is_conclusion = section_lower in {"conclusion", "summary", "closing remarks"}
 
             with st.spinner(f"Writing Section {idx+1}..."):
@@ -444,14 +468,14 @@ End with a thoughtful remark on the significance of the topic and possible direc
                     })
                     section_text = f"## Section {idx+1}: {section_title}\n\n{section_text}"
                     st.session_state.written_sections.append(section_text)
-                elif search_content.strip():
+                elif context.strip():
                     # Normal case with context
                     section_text = full_writer_chain.invoke({
                         "topic": st.session_state.topic,
                         "section_name": f"Section {idx+1}: {section_title}",
                         "section_topic": section_title,
                         "section_content": "",
-                        "context": search_content,
+                        "context": context,
                         "SECTION_WORD_LIMIT": 500,
                     })
                     st.session_state.written_sections.append(section_text)
