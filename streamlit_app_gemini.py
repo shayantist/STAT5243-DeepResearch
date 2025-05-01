@@ -2,6 +2,7 @@ import streamlit as st
 import asyncio
 import os
 import re
+import json
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from utils import tavily_search_async, deduplicate_and_format_sources
 from prompts import (
@@ -16,21 +17,70 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_ollama import ChatOllama
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # ----------------------
 # Utility Function
 # ----------------------
-def parse_report_plan_advanced(plan_text):
+def parse_report_plan_advanced(plan_input):
     """
-    Extracts section titles from a structured report plan by finding lines 
-    starting with 'Name:'. This version is robust to minor formatting variations.
-    """
-    pattern = r"[Nn]ame:\s*(.+)"
-    matches = re.findall(pattern, plan_text)
-    return [m.strip() for m in matches]
+    Extracts section titles from either a structured dict/list (tool-generated) 
+    or from a plain text report plan.
 
+    Args:
+        plan_input (Union[str, List[dict]]): Either a text-based plan or a list of section dicts.
+
+    Returns:
+        List[str]: A list of parsed section titles.
+    """
+    if isinstance(plan_input, list) and all(isinstance(item, dict) and "Name" in item for item in plan_input):
+        # Handle structured dict input (tool-style)
+        return [item["Name"].strip() for item in plan_input]
+    
+    elif isinstance(plan_input, str):
+        # Handle plain text input (ChatGPT-style plan)
+        pattern = r"[Nn]ame:\s*(.+)"
+        matches = re.findall(pattern, plan_input)
+        return [m.strip() for m in matches]
+
+    else:
+        raise ValueError("Invalid report plan format: must be either a list of dicts or a formatted string.")
+
+
+def load_structured_plan():
+    """
+    Load a structured report plan from either pasted JSON or uploaded .json file.
+    Parses it and stores section titles in session state.
+    """
+
+    st.markdown("Load Structured Report Plan")
+
+    # Developer paste input
+    with st.expander("Paste JSON Plan"):
+        raw_json = st.text_area("Paste your JSON-formatted section list here:", height=250)
+        if st.button("Parse from JSON Text"):
+            try:
+                parsed_obj = json.loads(raw_json)
+                section_titles = parse_report_plan_advanced(parsed_obj)
+                st.session_state.parsed_sections = section_titles
+                st.session_state.editable_sections = section_titles.copy()
+                st.success(f"Parsed {len(section_titles)} section(s) from pasted JSON.")
+                return
+            except Exception as e:
+                st.error(f"Failed to parse JSON: {e}")
+
+    # Upload file
+    uploaded = st.file_uploader("Or upload a .json file", type="json")
+    if uploaded:
+        try:
+            uploaded_plan = json.load(uploaded)
+            section_titles = parse_report_plan_advanced(uploaded_plan)
+            st.session_state.parsed_sections = section_titles
+            st.session_state.editable_sections = section_titles.copy()
+            st.success(f"Parsed {len(section_titles)} section(s) from uploaded file.")
+        except Exception as e:
+            st.error(f"Failed to read uploaded file: {e}")
 
 # ----------------------
 # Streamlit Config
@@ -69,7 +119,7 @@ if 'ollama' in selected_model:
     ollama_model = ChatOllama(model=selected_model)
 elif 'google' in selected_model:
     selected_model = selected_model.split(' (')[0]
-    ollama_model = ChatGoogleGenerativeAI(model=selected_model, google_api_key=os.getenv("GEMINI_API_KEY"))
+    ollama_model = ChatGoogleGenerativeAI(model=selected_model, google_api_key=st.secrets["GEMINI_API_KEY"])
 
 st.sidebar.markdown("---")
 if st.sidebar.button("Next Step"):
@@ -202,26 +252,29 @@ if st.session_state.step >= 1:
 # ----------------------
 if st.session_state.step >= 2:
     st.header("Step 2: Parse and Edit Section Titles")
-    
+    st.markdown("You can parse from a plain report plan, paste structured JSON, or upload a JSON file.")
     st.markdown("""
     **What this step does:**
     - Extracts section titles from your report plan
     - Allows you to review and customize each section title
-    - Prepares the structure for the next step of content generation
+    - Supports both plain text and JSON-style structured plans
     """)
+    
+    if st.session_state.report_plan and st.button("Parse from Text-Based Report Plan"):
+        try:
+            section_titles = parse_report_plan_advanced(st.session_state.report_plan)
+            st.session_state.parsed_sections = section_titles
+            st.session_state.editable_sections = section_titles.copy()
+            st.success(f"✅ Parsed {len(section_titles)} section(s) from text.")
+        except Exception as e:
+            st.error(f"Parsing failed: {e}")
 
-    if st.session_state.report_plan and st.button("Parse Sections from Report Plan"):
-        sections = parse_report_plan_advanced(st.session_state.report_plan)
-        if sections:
-            st.session_state.parsed_sections = sections
-            st.session_state.editable_sections = sections.copy()
-            st.success(f"✅ Parsed {len(sections)} section(s). You can now edit them.")
-        else:
-            st.warning("⚠️ No sections found. Please check the format of the Report Plan.")
+    # This is the new part:
+    load_structured_plan()
 
+    # Editable titles
     if st.session_state.editable_sections:
-        st.subheader("Editable Section Titles")
-
+        st.subheader("✏️ Editable Section Titles")
         updated_sections = []
         for idx, title in enumerate(st.session_state.editable_sections):
             new_title = st.text_input(f"Section {idx+1} Title", value=title, key=f"section_edit_{idx}")
@@ -231,63 +284,80 @@ if st.session_state.step >= 2:
             st.session_state.section_queries = updated_sections
             st.success("✅ Section titles saved! You can now proceed to Search.")
 
+
 # ----------------------
 # Step 3: Search per Section
 # ----------------------
-
 if st.session_state.step >= 3:
     st.header("Step 3: Search Web Resources for Each Section")
-    
+
     st.markdown("""
     **What this step does:**
-    - Searches the web for relevant information for each section using Tavily
-    - Gathers high-quality sources to support your research
+    - Searches the web for relevant information for each section
+    - Gathers high-quality sources using different APIs (Tavily, Google, GitHub)
     - Processes and formats the search results for content generation
     """)
 
-    # Actual search button
-    if st.button("Run Parallel Tavily Search"):
-        async def search_all_queries():
-            search_tasks = []
-            searchable_indices = []
-            filtered_queries = []
+    search_option = st.selectbox("Select Search Engine", ["Tavily", "Google", "GitHub"])
 
-            for idx, q in enumerate(st.session_state.section_queries):
-                q_lower = q.strip().lower()
-                if q_lower in {"introduction", "conclusion", "summary", "closing remarks", "references"}:
-                    st.session_state.search_results.append(f"(Search skipped for section: {q})")
+    def skip_section(q):
+        return q.strip().lower() in {"introduction", "conclusion", "summary", "closing remarks", "references"}
+
+    async def run_search(search_api):
+        search_results = []
+
+        if search_api == "Google":
+            from utils import google_search
+            api_key = st.secrets["GOOGLE_SEARCH_API_KEY"]
+            cse_id = st.secrets["GOOGLE_CSE_ID"]
+
+            for q in st.session_state.section_queries:
+                if skip_section(q):
+                    search_results.append(f"(Search skipped for section: {q})")
                 else:
-                    search_tasks.append(tavily_search_async([q]))
-                    searchable_indices.append(idx)
-                    filtered_queries.append(q)
+                    result = google_search(q, api_key, cse_id)
+                    formatted = deduplicate_and_format_sources(result, max_tokens_per_source=2000)
+                    search_results.append(formatted)
 
-            results = await asyncio.gather(*search_tasks)
-            combined = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in results]
+        elif search_api == "GitHub":
+            from utils import github_search
+            tasks = []
+            for q in st.session_state.section_queries:
+                if skip_section(q):
+                    search_results.append(f"(Search skipped for section: {q})")
+                else:
+                    tasks.append(github_search([q]))
+            raw_results = await asyncio.gather(*tasks)
+            formatted = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in raw_results]
+            idx = 0
+            for q in st.session_state.section_queries:
+                if skip_section(q):
+                    continue
+                search_results.append(formatted[idx])
+                idx += 1
 
-            for idx, content in zip(searchable_indices, combined):
-                st.session_state.search_results[idx] = content
+        elif search_api == "Tavily":
+            from utils import tavily_search_async
+            tasks, indices = [], []
+            for idx, q in enumerate(st.session_state.section_queries):
+                if skip_section(q):
+                    search_results.append(f"(Search skipped for section: {q})")
+                else:
+                    tasks.append(tavily_search_async([q]))
+                    indices.append(idx)
 
-        st.session_state.search_results = [""] * len(st.session_state.section_queries)
-        asyncio.run(search_all_queries())
+            raw_results = await asyncio.gather(*tasks)
+            formatted = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in raw_results]
+            result_map = dict(zip(indices, formatted))
+            for idx in range(len(st.session_state.section_queries)):
+                if idx in result_map:
+                    search_results.append(result_map[idx])
 
-    ######Insert mock-up buttons HERE:
-    with st.container():
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Google Search", key="google_mock"):
-                st.info("Google Search feature is not yet implemented.")
-        with col2:
-            if st.button("GitHub Search", key="github_mock"):
-                st.info("GitHub Search feature is not yet implemented.")
+        return search_results
 
-    # Optional: mock output previews
-    if st.session_state.get("google_mock"):
-        st.text_area("Google Search Preview (Mock)", value="Mock result from Google...", height=150)
+    if st.button(f"Run {search_option} Search"):
+        st.session_state.search_results = asyncio.run(run_search(search_option))
 
-    if st.session_state.get("github_mock"):
-        st.text_area("GitHub Search Preview (Mock)", value="Mock result from GitHub...", height=150)
-
-    # Existing section
     if st.session_state.search_results:
         st.subheader("Fetched Search Results")
         for idx, result in enumerate(st.session_state.search_results, 1):

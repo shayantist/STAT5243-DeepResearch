@@ -443,3 +443,46 @@ async def select_and_execute_search(search_api: str, query_list: list[str], para
         return deduplicate_and_format_sources(combined_results, max_tokens_per_source=4000)
     else:
         raise ValueError(f"Unsupported search API: {search_api}")
+    
+def google_search(query, api_key, cse_id, num_results=3):
+    """
+    Perform a Google Custom Search using the Programmable Search API.
+
+    Args:
+        query (str): Search query string
+        api_key (str): Your Google Search API key
+        cse_id (str): Your Custom Search Engine ID
+        num_results (int): Number of results to return
+
+    Returns:
+        List[dict]: List of search result dicts in the standard format
+    """
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "q": query,
+        "key": api_key,
+        "cx": cse_id,
+        "num": num_results,
+    }
+
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    results = []
+    for item in data.get("items", []):
+        results.append({
+            "title": item.get("title"),
+            "url": item.get("link"),
+            "content": item.get("snippet", ""),
+            "raw_content": "",
+            "score": 0.7
+        })
+
+    return [{
+        "query": query,
+        "follow_up_questions": None,
+        "answer": None,
+        "images": [],
+        "results": results
+    }]
