@@ -288,6 +288,7 @@ if st.session_state.step >= 2:
 # ----------------------
 # Step 3: Search per Section
 # ----------------------
+
 if st.session_state.step >= 3:
     st.header("Step 3: Search Web Resources for Each Section")
 
@@ -298,7 +299,15 @@ if st.session_state.step >= 3:
     - Processes and formats the search results for content generation
     """)
 
-    search_option = st.selectbox("Select Search Engine", ["Tavily", "Google", "GitHub"])
+    search_option = st.selectbox("Select Search Engine", ["Tavily", "Google", "GitHub", "DuckDuckGo"])
+
+    from utils import (
+        deduplicate_and_format_sources,
+        tavily_search_async,
+        github_search,
+        google_search,
+        duckduckgo_search,
+    )
 
     def skip_section(q):
         return q.strip().lower() in {"introduction", "conclusion", "summary", "closing remarks", "references"}
@@ -307,10 +316,8 @@ if st.session_state.step >= 3:
         search_results = []
 
         if search_api == "Google":
-            from utils import google_search
             api_key = st.secrets["GOOGLE_SEARCH_API_KEY"]
             cse_id = st.secrets["GOOGLE_CSE_ID"]
-
             for q in st.session_state.section_queries:
                 if skip_section(q):
                     search_results.append(f"(Search skipped for section: {q})")
@@ -320,7 +327,6 @@ if st.session_state.step >= 3:
                     search_results.append(formatted)
 
         elif search_api == "GitHub":
-            from utils import github_search
             tasks = []
             for q in st.session_state.section_queries:
                 if skip_section(q):
@@ -337,7 +343,6 @@ if st.session_state.step >= 3:
                 idx += 1
 
         elif search_api == "Tavily":
-            from utils import tavily_search_async
             tasks, indices = [], []
             for idx, q in enumerate(st.session_state.section_queries):
                 if skip_section(q):
@@ -352,6 +357,22 @@ if st.session_state.step >= 3:
             for idx in range(len(st.session_state.section_queries)):
                 if idx in result_map:
                     search_results.append(result_map[idx])
+        
+        elif search_api == "DuckDuckGo":
+            tasks = []
+            for q in st.session_state.section_queries:
+                if skip_section(q):
+                    search_results.append(f"(Search skipped for section: {q})")
+                else:
+                    tasks.append(duckduckgo_search([q]))
+            raw_results = await asyncio.gather(*tasks)
+            formatted = [deduplicate_and_format_sources(r, max_tokens_per_source=2000) for r in raw_results]
+            idx = 0
+            for q in st.session_state.section_queries:
+                if skip_section(q):
+                    continue
+                search_results.append(formatted[idx])
+                idx += 1
 
         return search_results
 
@@ -362,7 +383,6 @@ if st.session_state.step >= 3:
         st.subheader("Fetched Search Results")
         for idx, result in enumerate(st.session_state.search_results, 1):
             st.text_area(f"Search Result {idx}", result, height=300)
-
 
 # ----------------------
 # Step 4: Write Sections
