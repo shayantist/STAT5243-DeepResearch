@@ -6,6 +6,9 @@
 
 For our bonus project, we chose to implement a deep research workflow using open-source language models deployed locally using Ollama. Our code is adapted from LangGraph's [implementation](https://github.com/langchain-ai/langchain/tree/main/examples/open_deep_research) of Deep Research but with significant refactoring and optimizations for the purposes of report generation using open-source language models deployed locally using Ollama. 
 
+**Demo Video**
+Please take a look at the short demo video(https://drive.google.com/file/d/1rXzD-GUM_hHPa0sAL8k6jOxeMhQBxP5w/view?usp=sharing)
+
 **Main features**:
 - Using reasoning LLMs for report planning and reflection/grading to ensure each of the sections are well-researched and of high quality
 - Allowing for human feedback and iteration on the report plan for greater flexibility (human-in-the-loop design)
