@@ -21,7 +21,7 @@ Please take a look at the short demo video(https://drive.google.com/file/d/1rXzD
 STAT5243-DeepResearch/
 ├── .streamlit/
 │   └── .secrets.toml 
-├── streamlit_app_gemini.py
+├── streamlit_app.py
 ├── utils.py
 ├── prompts.py
 ├── deep_research_test.ipynb
@@ -76,6 +76,6 @@ GEMINI_API_KEY = "your_google_gemini_key"
 
 5. Usage
 ```bash
-streamlit run streamlit_app_gemini.py
+streamlit run streamlit_app.py
 ```
 
